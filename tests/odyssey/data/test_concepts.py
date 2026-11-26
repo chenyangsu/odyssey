@@ -413,6 +413,50 @@ def test_baseline_relative_rule_ratio_mode_below_direction_triggers_on_proportio
     assert labels["big_relative_drop"].to_list() == [1]
 
 
+@pytest.mark.parametrize(
+    ("bound", "first", "second", "expected"),
+    [
+        # Rises of exactly 0.3 mg/dL that come out under 0.3 in Float32.
+        ({"delta": 0.3}, 1.0, 1.3, 1),
+        ({"delta": 0.3}, 0.4, 0.7, 1),
+        ({"delta": 0.3}, 1.2, 1.5, 1),
+        ({"delta": 0.3}, 1.0, 1.29, 0),
+        # Exactly 1.5x and 3x, where the product comes out above the reading.
+        ({"ratio": 1.5}, 0.6, 0.9, 1),
+        ({"ratio": 1.5}, 2.2, 3.3, 1),
+        ({"ratio": 1.5}, 0.6, 0.89, 0),
+        ({"ratio": 3.0}, 0.3, 0.9, 1),
+        ({"ratio": 3.0}, 1.1, 3.3, 1),
+    ],
+)
+def test_baseline_relative_rule_counts_a_reading_exactly_on_the_boundary(
+    bound: dict[str, float], first: float, second: float, expected: int
+) -> None:
+    """KDIGO's criteria are inclusive, so Float32 rounding must not undo that."""
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    direction="above",
+                    window_hours=168.0,
+                    **bound,
+                )
+            ],
+            "creatinine rose by >= delta or to >= ratio x baseline",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//RESULT//50912//", first, T0),
+            (1, "LAB//RESULT//50912//", second, T0 + timedelta(hours=24)),
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["aki"].to_list() == [expected]
+
+
 def test_aki_staging_is_monotonically_more_selective() -> None:
     """Same real-data-shaped scenario, worse severity should trigger more stages."""
     aki_concepts = [

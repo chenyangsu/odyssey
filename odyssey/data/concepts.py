@@ -1404,6 +1404,15 @@ def _sustained_ids(
     return observed, triggered
 
 
+# Relative slack for a reading that lies exactly on a baseline-relative
+# boundary. Lab values are decimals stored as binary floats (Float32 in
+# MEDS), so 1.0 -> 1.3 mg/dL is a rise of 0.29999995, and 1.5 x 0.6 comes
+# out above 0.9: without slack, KDIGO's ">= 0.3" and ">= 1.5x" miss many
+# boundary readings. 1e-6 is far above Float32 rounding error and far
+# below any lab's reporting precision.
+_BASELINE_RELATIVE_RTOL = 1e-6
+
+
 def _baseline_relative_ids(
     events: pl.DataFrame,
     rule: BaselineRelativeRule,
@@ -1455,19 +1464,24 @@ def _baseline_relative_ids(
     ).over(subject_id_col)
     matched = matched.with_columns(baseline_expr.alias("_baseline"))
 
+    value = pl.col(value_col).cast(pl.Float64)
+    baseline = pl.col("_baseline").cast(pl.Float64)
     if rule.ratio is not None:
-        comparison = (
-            pl.col(value_col) >= rule.ratio * pl.col("_baseline")
+        bound = (
+            rule.ratio * baseline
             if rule.direction == "above"
-            else pl.col(value_col) <= pl.col("_baseline") / rule.ratio
+            else baseline / rule.ratio
         )
     else:
-        delta_expr = (
-            pl.col(value_col) - pl.col("_baseline")
+        bound = (
+            baseline + rule.delta
             if rule.direction == "above"
-            else pl.col("_baseline") - pl.col(value_col)
+            else baseline - rule.delta
         )
-        comparison = delta_expr >= rule.delta
+    slack = _BASELINE_RELATIVE_RTOL * bound.abs()
+    comparison = (
+        value >= bound - slack if rule.direction == "above" else value <= bound + slack
+    )
 
     triggered = _first_times(
         matched.filter(pl.col("_baseline").is_not_null() & comparison),
